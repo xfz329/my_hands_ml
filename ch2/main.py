@@ -25,6 +25,7 @@ class Ch2:
         self.housing_num = None
         self.housing_prepared = None
         self.full_pipeline = None
+        self.final_model = None
 
     def init_pic_dir(self):
         PROJECT_ROOT_DIR = ".."
@@ -255,19 +256,115 @@ class Ch2:
         tree_rmse = np.sqrt(tree_mse)
         self.log.info(tree_rmse)
 
+        # Fine-tune your model
+        from sklearn.model_selection import cross_val_score
+
+        scores = cross_val_score(tree_reg, self.housing_prepared, self.housing_labels,
+                                 scoring="neg_mean_squared_error", cv=10)
+        tree_rmse_scores = np.sqrt(-scores)
+        self.display_scores(tree_rmse_scores)
+
+        lin_scores = cross_val_score(lin_reg, self.housing_prepared, self.housing_labels,
+                                     scoring="neg_mean_squared_error", cv=10)
+        lin_rmse_scores = np.sqrt(-lin_scores)
+        self.display_scores(lin_rmse_scores)
+
+        from sklearn.ensemble import RandomForestRegressor
+
+        forest_reg = RandomForestRegressor(n_estimators=10, random_state=42)
+        forest_reg.fit(self.housing_prepared, self.housing_labels)
+
+        housing_predictions = forest_reg.predict(self.housing_prepared)
+        forest_mse = mean_squared_error(self.housing_labels, housing_predictions)
+        forest_rmse = np.sqrt(forest_mse)
+        self.log.info(forest_rmse)
+
+        forest_scores = cross_val_score(forest_reg, self.housing_prepared, self.housing_labels,
+                                        scoring="neg_mean_squared_error", cv=10)
+        forest_rmse_scores = np.sqrt(-forest_scores)
+        self.display_scores(forest_rmse_scores)
 
 
+    def display_scores(self, scores):
+        self.log.info("Scores:" +str(scores))
+        self.log.info("Mean:" + str(scores.mean()))
+        self.log.info("Standard deviation:" + str(scores.std()))
 
 
+    def fine_tune(self):
+        from sklearn.model_selection import  GridSearchCV
+        from sklearn.ensemble import RandomForestRegressor
 
+        para_grid =[
+            {"n_estimators":[3,10,30], "max_features":[2,4,6,8]},
+            {"bootstrap":[False],"n_estimators":[3,10],"max_features":[2,3,4]},
+        ]
 
+        forest_reg = RandomForestRegressor(random_state= 42)
+        grid_search = GridSearchCV(forest_reg, para_grid,cv=5,scoring="neg_mean_squared_error",return_train_score=True)
+        grid_search.fit(self.housing_prepared, self.housing_labels)
 
+        self.log.info(grid_search.best_estimator_)
+        feature_importances = grid_search.best_estimator_.feature_importances_
+        self.log.info(feature_importances)
 
+        self.final_model = grid_search.best_estimator_
 
+        # extra_attribs = ["rooms_per_hhold", "pop_per_hhold", "bedrooms_per_room"]
+        # # cat_encoder = cat_pipeline.named_steps["cat_encoder"] # old solution
+        # cat_encoder = self.full_pipeline.named_transformers_["cat"]
+        # cat_one_hot_attribs = list(cat_encoder.categories_[0])
+        # attributes = num_attribs + extra_attribs + cat_one_hot_attribs
+        # sorted(zip(feature_importances, attributes), reverse=True)
 
+        cvres = grid_search.cv_results_
+        for mean_score, params in zip(cvres["mean_test_score"], cvres["params"]):
+            print(np.sqrt(-mean_score), params)
 
+        self.log.info(pd.DataFrame(grid_search.cv_results_))
 
+        from sklearn.model_selection import RandomizedSearchCV
+        from scipy.stats import randint
 
+        param_distribs = {
+            'n_estimators': randint(low=1, high=200),
+            'max_features': randint(low=1, high=8),
+        }
+
+        forest_reg = RandomForestRegressor(random_state=42)
+        rnd_search = RandomizedSearchCV(forest_reg, param_distributions=param_distribs,
+                                        n_iter=10, cv=5, scoring='neg_mean_squared_error', random_state=42)
+        rnd_search.fit(self.housing_prepared, self.housing_labels)
+        self.log.info(rnd_search.best_estimator_)
+
+    def test(self):
+        X_test = self.test_set.drop("median_house_value", axis=1)
+        y_test = self.test_set["median_house_value"].copy()
+
+        X_test_prepared = self.full_pipeline.transform(X_test)
+        final_predictions = self.final_model.predict(X_test_prepared)
+
+        from sklearn.metrics import mean_squared_error
+        final_mse = mean_squared_error(y_test, final_predictions)
+        final_rmse = np.sqrt(final_mse)
+        self.log.info(final_rmse)
+
+    def save(self):
+        from sklearn.pipeline import Pipeline
+        from sklearn.linear_model import LinearRegression
+        full_pipeline_with_predictor = Pipeline([
+            ("preparation", self.full_pipeline),
+            ("linear", LinearRegression())
+        ])
+        my_model = full_pipeline_with_predictor
+
+        import joblib
+        joblib.dump(my_model, "my_model.pkl")
+        my_model_loaded = joblib.load("my_model.pkl")
+
+        my_model_loaded.fit(self.housing, self.housing_labels)
+        some_data = self.housing.iloc[:5]
+        self.log.info(my_model_loaded.predict(some_data))
 
 if __name__ == "__main__":
     c = Ch2()
@@ -283,3 +380,6 @@ if __name__ == "__main__":
     c.my_transform()
     c.my_pipeline()
     c.train_models()
+    c.fine_tune()
+    c.test()
+    c.save()
